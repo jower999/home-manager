@@ -33,7 +33,7 @@ HOMEKIT_STORAGE_DIR = '.homekit'
 os.makedirs(HOMEKIT_STORAGE_DIR, exist_ok=True)
 
 def discover_devices():
-    """Discover unpaired HomeKit devices on the network."""
+    """Discover HomeKit devices on the network."""
     if not HOMEKIT_ENABLED:
         console.print("[red]❌ HomeKit library not available. Install with: pip install homekit[IP][/red]")
         return []
@@ -41,8 +41,8 @@ def discover_devices():
     try:
         controller = Controller()
         devices = controller.discover(max_seconds=10)
-        unpaired = [d for d in devices if d.get('sf') == '1']  # status flag 1 means unpaired
-        return unpaired
+        console.print(f"[blue]ℹ️  Found {len(devices)} total device(s) on network.[/blue]")
+        return devices  # Return all devices, not just unpaired
     except Exception as e:
         console.print(f"[red]❌ Error discovering devices: {e}[/red]")
         return []
@@ -81,7 +81,7 @@ def list_paired_devices():
     for file in os.listdir(HOMEKIT_STORAGE_DIR):
         if file.endswith('.json'):
             alias = file[:-5]  # remove .json
-            devices.append(alias)
+            devices.append({'alias': alias, 'id': alias})  # For now, alias is the ID
     return devices
 
 def get_accessories(alias):
@@ -113,86 +113,72 @@ def control_characteristic(alias, aid, cid, value):
         console.print(f"[red]❌ Error controlling characteristic: {e}[/red]")
         return False
 
-def manage_devices():
-    """Manage paired devices."""
+def manage_devices(alias):
+    """Manage a specific paired device."""
     while True:
-        devices = list_paired_devices()
-        if not devices:
-            console.print("[yellow]⚠️  No paired devices found.[/yellow]")
+        console.print(f"\n[bold yellow]Managing device:[/bold yellow] [green]'{alias}'[/green]")
+        
+        accessories = get_accessories(alias)
+        if not accessories:
+            console.print("[red]❌ No accessories found.[/red]")
             return
         
-        choices = devices + ["⬅️  Back"]
-        selected = questionary.select("Select device to manage:", choices, style=menu_style).ask()
-        
-        if selected == "⬅️  Back" or selected is None:
-            return
-        
-        alias = selected
-        
-        while True:
-            console.print(f"\n[bold yellow]Managing device:[/bold yellow] [green]'{alias}'[/green]")
-            
-            accessories = get_accessories(alias)
-            if not accessories:
-                console.print("[red]❌ No accessories found.[/red]")
-                break
-            
-            # Display accessories
-            console.print("\n[bold cyan]Accessories:[/bold cyan]")
-            for aid, accessory in accessories.items():
-                console.print(f"  Accessory {aid}: {accessory.get('name', 'Unknown')}")
-                services = accessory.get('services', [])
-                for service in services:
-                    service_type = service.get('type', 'Unknown')
-                    characteristics = service.get('characteristics', [])
-                    for char in characteristics:
-                        cid = char.get('iid')
-                        char_type = char.get('type', 'Unknown')
-                        value = char.get('value', 'N/A')
-                        perms = char.get('permissions', [])
-                        if 'pw' in perms:  # writable
-                            console.print(f"    {aid}.{cid}: {char_type} = {value} (writable)")
-                        else:
-                            console.print(f"    {aid}.{cid}: {char_type} = {value}")
-            
-            choices = [
-                "🔄 Refresh Accessories",
-                "🎛️  Control Characteristic",
-                "🗑️  Unpair Device",
-                "⬅️  Back"
-            ]
-            
-            selected_action = questionary.select("Choose action:", choices, style=menu_style).ask()
-            
-            if selected_action == "🔄 Refresh Accessories":
-                continue
-            elif selected_action == "🎛️  Control Characteristic":
-                # Simple control: ask for aid.cid and value
-                char_input = questionary.text("Enter characteristic (format: aid.cid):").ask()
-                if char_input:
-                    try:
-                        aid_str, cid_str = char_input.split('.')
-                        aid = int(aid_str)
-                        cid = int(cid_str)
-                        value_input = questionary.text("Enter value (true/false for bool, number for others):").ask()
-                        if value_input.lower() in ['true', 'false']:
-                            value = value_input.lower() == 'true'
-                        else:
-                            value = float(value_input) if '.' in value_input else int(value_input)
-                        control_characteristic(alias, aid, cid, value)
-                    except ValueError:
-                        console.print("[red]❌ Invalid format. Use aid.cid[/red]")
-            elif selected_action == "🗑️  Unpair Device":
-                if questionary.confirm(f"Are you sure you want to unpair {alias}?").ask():
-                    pairing_file = os.path.join(HOMEKIT_STORAGE_DIR, f"{alias}.json")
-                    if os.path.exists(pairing_file):
-                        os.remove(pairing_file)
-                        console.print(f"[green]✅ Unpaired {alias}.[/green]")
-                        break
+        # Display accessories
+        console.print("\n[bold cyan]Accessories:[/bold cyan]")
+        for aid, accessory in accessories.items():
+            console.print(f"  Accessory {aid}: {accessory.get('name', 'Unknown')}")
+            services = accessory.get('services', [])
+            for service in services:
+                service_type = service.get('type', 'Unknown')
+                characteristics = service.get('characteristics', [])
+                for char in characteristics:
+                    cid = char.get('iid')
+                    char_type = char.get('type', 'Unknown')
+                    value = char.get('value', 'N/A')
+                    perms = char.get('permissions', [])
+                    if 'pw' in perms:  # writable
+                        console.print(f"    {aid}.{cid}: {char_type} = {value} (writable)")
                     else:
-                        console.print("[red]❌ Pairing file not found.[/red]")
-            elif selected_action == "⬅️  Back":
-                break
+                        console.print(f"    {aid}.{cid}: {char_type} = {value}")
+        
+        choices = [
+            "🔄 Refresh Accessories",
+            "🎛️  Control Characteristic",
+            "🗑️  Unpair Device",
+            "⬅️  Back"
+        ]
+        
+        selected_action = questionary.select("Choose action:", choices, style=menu_style).ask()
+        
+        if selected_action == "🔄 Refresh Accessories":
+            continue
+        elif selected_action == "🎛️  Control Characteristic":
+            # Simple control: ask for aid.cid and value
+            char_input = questionary.text("Enter characteristic (format: aid.cid):").ask()
+            if char_input:
+                try:
+                    aid_str, cid_str = char_input.split('.')
+                    aid = int(aid_str)
+                    cid = int(cid_str)
+                    value_input = questionary.text("Enter value (true/false for bool, number for others):").ask()
+                    if value_input.lower() in ['true', 'false']:
+                        value = value_input.lower() == 'true'
+                    else:
+                        value = float(value_input) if '.' in value_input else int(value_input)
+                    control_characteristic(alias, aid, cid, value)
+                except ValueError:
+                    console.print("[red]❌ Invalid format. Use aid.cid[/red]")
+        elif selected_action == "🗑️  Unpair Device":
+            if questionary.confirm(f"Are you sure you want to unpair {alias}?").ask():
+                pairing_file = os.path.join(HOMEKIT_STORAGE_DIR, f"{alias}.json")
+                if os.path.exists(pairing_file):
+                    os.remove(pairing_file)
+                    console.print(f"[green]✅ Unpaired {alias}.[/green]")
+                    return
+                else:
+                    console.print("[red]❌ Pairing file not found.[/red]")
+        elif selected_action == "⬅️  Back":
+            return
 
 def interactive_menu():
     console.print("\n[bold green]🏠 Home Manager[/bold green]", justify="center")
@@ -211,25 +197,28 @@ def interactive_menu():
         if selected == "🔍 Discover Devices":
             devices = discover_devices()
             if devices:
-                console.print(f"\n[bold cyan]Found {len(devices)} unpaired device(s):[/bold cyan]")
+                console.print(f"\n[bold cyan]Found {len(devices)} device(s) on network:[/bold cyan]")
                 for i, device in enumerate(devices, 1):
-                    console.print(f"[magenta]{i}.[/magenta] {device['name']} (ID: {device['id']})")
+                    status = "Unpaired" if device.get('sf') == '1' else "Paired"
+                    console.print(f"[magenta]{i}.[/magenta] {device['name']} (ID: {device['id']}) - [yellow]{status}[/yellow]")
             else:
-                console.print("[yellow]⚠️  No unpaired devices found.[/yellow]")
+                console.print("[yellow]⚠️  No HomeKit devices found on network.[/yellow]")
+                console.print("[dim]Make sure you have HomeKit-enabled devices on your network and they are powered on.[/dim]")
         elif selected == "🔗 Pair Device":
             devices = discover_devices()
-            if not devices:
-                console.print("[yellow]⚠️  No unpaired devices found. Discover first.[/yellow]")
+            unpaired = [d for d in devices if d.get('sf') == '1']
+            if not unpaired:
+                console.print("[yellow]⚠️  No unpaired devices found. Discover devices first to see all available devices.[/yellow]")
                 continue
             
-            console.print("\n[bold cyan]Available devices:[/bold cyan]")
-            for i, device in enumerate(devices, 1):
+            console.print("\n[bold cyan]Available unpaired devices:[/bold cyan]")
+            for i, device in enumerate(unpaired, 1):
                 console.print(f"[magenta]{i}.[/magenta] {device['name']} (ID: {device['id']})")
             
             device_choice = questionary.text("Enter device number to pair:").ask()
             try:
                 idx = int(device_choice) - 1
-                device = devices[idx]
+                device = unpaired[idx]
                 setup_code = questionary.text("Enter setup code (XXX-XX-XXX):").ask()
                 alias = questionary.text("Enter alias for device:").ask()
                 if setup_code and alias:
@@ -237,7 +226,23 @@ def interactive_menu():
             except (ValueError, IndexError):
                 console.print("[red]❌ Invalid selection.[/red]")
         elif selected == "📱 Manage Devices":
-            manage_devices()
+            paired_devices = list_paired_devices()
+            if not paired_devices:
+                console.print("[yellow]⚠️  No paired devices found.[/yellow]")
+                console.print("[dim]Pair devices first to manage them.[/dim]")
+                continue
+            
+            console.print("\n[bold cyan]Paired devices:[/bold cyan]")
+            for i, device in enumerate(paired_devices, 1):
+                console.print(f"[magenta]{i}.[/magenta] {device['alias']} (ID: {device['id']})")
+            
+            device_choice = questionary.text("Enter device number to manage:").ask()
+            try:
+                idx = int(device_choice) - 1
+                device = paired_devices[idx]
+                manage_devices(device['alias'])
+            except (ValueError, IndexError):
+                console.print("[red]❌ Invalid selection.[/red]")
         elif selected == "🚪 Exit":
             console.print("[bold green]👋 Goodbye![/bold green]")
             break
