@@ -40,7 +40,7 @@ def discover_devices():
     
     try:
         controller = Controller()
-        devices = controller.discover(timeout=10)
+        devices = controller.discover(max_seconds=10)
         unpaired = [d for d in devices if d.get('sf') == '1']  # status flag 1 means unpaired
         return unpaired
     except Exception as e:
@@ -58,7 +58,7 @@ def pair_device(device_id, setup_code, alias):
         controller.init_pairing_data_file(pairing_file)
         
         # Discover the device
-        devices = controller.discover(timeout=10)
+        devices = controller.discover(max_seconds=10)
         device = next((d for d in devices if d['id'] == device_id), None)
         
         if not device:
