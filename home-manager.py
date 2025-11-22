@@ -42,7 +42,14 @@ def discover_devices():
         controller = Controller()
         devices = controller.discover(max_seconds=10)
         console.print(f"[blue]ℹ️  Found {len(devices)} total device(s) on network.[/blue]")
-        return devices  # Return all devices, not just unpaired
+        
+        # Debug: print device info
+        for i, device in enumerate(devices):
+            sf_value = device.get('sf', 'unknown')
+            status = "Unpaired" if sf_value == '1' else "Paired" if sf_value == '0' else f"Unknown ({sf_value})"
+            console.print(f"[dim]  Device {i+1}: {device.get('name', 'Unknown')} (ID: {device.get('id', 'Unknown')}) - Status: {status}[/dim]")
+        
+        return devices  # Return all devices
     except Exception as e:
         console.print(f"[red]❌ Error discovering devices: {e}[/red]")
         return []
