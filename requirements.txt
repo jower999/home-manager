@@ -1,0 +1,4 @@
+homekit[IP]
+questionary
+rich
+python-dotenv
