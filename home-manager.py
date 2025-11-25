@@ -10,6 +10,7 @@ import questionary
 from dotenv import load_dotenv
 from rich.console import Console
 from prompt_toolkit.styles import Style
+import requests
 
 try:
     from homekit import Controller
@@ -31,6 +32,9 @@ menu_style = Style.from_dict({
 # HomeKit storage
 HOMEKIT_STORAGE_DIR = '.homekit'
 os.makedirs(HOMEKIT_STORAGE_DIR, exist_ok=True)
+
+# Hue storage
+HUE_CONFIG_FILE = 'hue_config.json'
 
 def discover_devices():
     """Discover HomeKit devices on the network."""
@@ -62,7 +66,7 @@ def pair_device(device_id, setup_code, alias):
     try:
         controller = Controller()
         pairing_file = os.path.join(HOMEKIT_STORAGE_DIR, f"{alias}.json")
-        controller.init_pairing_data_file(pairing_file)
+        controller.initialize_pairing_data_file(pairing_file)
         
         # Discover the device
         devices = controller.discover(max_seconds=10)
@@ -187,15 +191,147 @@ def manage_devices(alias):
         elif selected_action == "⬅️  Back":
             return
 
+def discover_hue_bridge():
+    """Discover Philips Hue Bridge on the network."""
+    try:
+        # Hue bridges use UPnP for discovery
+        response = requests.get('https://discovery.meethue.com/', timeout=10)
+        if response.status_code == 200:
+            bridges = response.json()
+            if bridges:
+                console.print(f"[blue]ℹ️  Found {len(bridges)} Hue bridge(s) on network.[/blue]")
+                for bridge in bridges:
+                    console.print(f"[dim]  Bridge: {bridge.get('name', 'Unknown')} (IP: {bridge['internalipaddress']})[/dim]")
+                return bridges
+        console.print("[yellow]⚠️  No Hue bridges found on network.[/yellow]")
+        return []
+    except Exception as e:
+        console.print(f"[red]❌ Error discovering Hue bridges: {e}[/red]")
+        return []
+
+def authenticate_hue_bridge(bridge_ip):
+    """Authenticate with Hue Bridge."""
+    try:
+        console.print("[yellow]Press the link button on your Hue Bridge, then press Enter.[/yellow]")
+        input("Press Enter to continue...")
+        
+        payload = {"devicetype": "home-manager#python"}
+        response = requests.post(f"http://{bridge_ip}/api", json=payload, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, list) and 'success' in data[0]:
+                username = data[0]['success']['username']
+                config = {'bridge_ip': bridge_ip, 'username': username}
+                with open(HUE_CONFIG_FILE, 'w') as f:
+                    json.dump(config, f)
+                console.print(f"[green]✅ Authenticated with Hue Bridge. Config saved.[/green]")
+                return True
+            elif isinstance(data, list) and 'error' in data[0]:
+                console.print(f"[red]❌ Authentication failed: {data[0]['error']['description']}[/red]")
+        return False
+    except Exception as e:
+        console.print(f"[red]❌ Error authenticating: {e}[/red]")
+        return False
+
+def load_hue_config():
+    """Load Hue configuration."""
+    if os.path.exists(HUE_CONFIG_FILE):
+        with open(HUE_CONFIG_FILE, 'r') as f:
+            return json.load(f)
+    return None
+
+def get_hue_lights():
+    """Get list of Hue lights."""
+    config = load_hue_config()
+    if not config:
+        console.print("[red]❌ Hue not configured. Set up Hue first.[/red]")
+        return []
+    
+    try:
+        response = requests.get(f"http://{config['bridge_ip']}/api/{config['username']}/lights", timeout=10)
+        if response.status_code == 200:
+            lights = response.json()
+            return lights
+        else:
+            console.print(f"[red]❌ Failed to get lights: {response.status_code}[/red]")
+            return []
+    except Exception as e:
+        console.print(f"[red]❌ Error getting lights: {e}[/red]")
+        return []
+
+def control_hue_light(light_id, state):
+    """Control a Hue light."""
+    config = load_hue_config()
+    if not config:
+        return False
+    
+    try:
+        url = f"http://{config['bridge_ip']}/api/{config['username']}/lights/{light_id}/state"
+        response = requests.put(url, json=state, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, list) and 'success' in data[0]:
+                console.print(f"[green]✅ Light {light_id} updated.[/green]")
+                return True
+            else:
+                console.print(f"[red]❌ Failed to control light: {data}[/red]")
+        else:
+            console.print(f"[red]❌ HTTP error: {response.status_code}[/red]")
+        return False
+    except Exception as e:
+        console.print(f"[red]❌ Error controlling light: {e}[/red]")
+        return False
+
+def manage_hue_lights():
+    """Manage Hue lights."""
+    while True:
+        lights = get_hue_lights()
+        if not lights:
+            return
+        
+        console.print("\n[bold cyan]Hue Lights:[/bold cyan]")
+        for lid, light in lights.items():
+            name = light.get('name', 'Unknown')
+            state = light.get('state', {})
+            on = state.get('on', False)
+            bri = state.get('bri', 0)
+            status = "On" if on else "Off"
+            console.print(f"  {lid}: {name} - {status} (Brightness: {bri})")
+        
+        choices = ["🎛️  Control Light", "⬅️  Back"]
+        selected = questionary.select("Choose action:", choices, style=menu_style).ask()
+        
+        if selected == "🎛️  Control Light":
+            light_choice = questionary.text("Enter light ID:").ask()
+            if light_choice in lights:
+                action = questionary.select("Action:", ["Turn On", "Turn Off", "Set Brightness"], style=menu_style).ask()
+                if action == "Turn On":
+                    control_hue_light(light_choice, {"on": True})
+                elif action == "Turn Off":
+                    control_hue_light(light_choice, {"on": False})
+                elif action == "Set Brightness":
+                    bri = questionary.text("Brightness (1-254):").ask()
+                    try:
+                        bri = int(bri)
+                        control_hue_light(light_choice, {"bri": bri})
+                    except ValueError:
+                        console.print("[red]❌ Invalid brightness.[/red]")
+            else:
+                console.print("[red]❌ Invalid light ID.[/red]")
+        elif selected == "⬅️  Back":
+            return
+
 def interactive_menu():
     console.print("\n[bold green]🏠 Home Manager[/bold green]", justify="center")
-    console.print("[dim]Control your Apple HomeKit devices[/dim]\n", justify="center")
+    console.print("[dim]Control your Apple HomeKit devices and Philips Hue lights[/dim]\n", justify="center")
     
     while True:
         choices = [
             "🔍 Discover Devices",
             "🔗 Pair Device",
             "📱 Manage Devices",
+            "💡 Setup Hue Bridge",
+            "🔦 Manage Hue Lights",
             "🚪 Exit"
         ]
         
@@ -213,19 +349,22 @@ def interactive_menu():
                 console.print("[dim]Make sure you have HomeKit-enabled devices on your network and they are powered on.[/dim]")
         elif selected == "🔗 Pair Device":
             devices = discover_devices()
-            unpaired = [d for d in devices if d.get('sf') == '1']
-            if not unpaired:
-                console.print("[yellow]⚠️  No unpaired devices found. Discover devices first to see all available devices.[/yellow]")
+            if not devices:
+                console.print("[yellow]⚠️  No devices found. Make sure HomeKit devices are on the network and powered on.[/yellow]")
                 continue
             
-            console.print("\n[bold cyan]Available unpaired devices:[/bold cyan]")
-            for i, device in enumerate(unpaired, 1):
-                console.print(f"[magenta]{i}.[/magenta] {device['name']} (ID: {device['id']})")
+            console.print("\n[bold cyan]Available devices:[/bold cyan]")
+            for i, device in enumerate(devices, 1):
+                status = "Unpaired" if device.get('sf') == '1' else "Paired"
+                console.print(f"[magenta]{i}.[/magenta] {device['name']} (ID: {device['id']}) - [yellow]{status}[/yellow]")
+            
+            console.print("[yellow]Note: If a device is already paired to another controller (like Apple Home), it won't appear here unless you put it in pairing mode first.[/yellow]")
+            console.print("[dim]To put a device in pairing mode: Check your device's manual. Usually, press and hold the pairing button for 5-10 seconds, or reset the device. The device will then advertise itself for pairing.[/dim]")
             
             device_choice = questionary.text("Enter device number to pair:").ask()
             try:
                 idx = int(device_choice) - 1
-                device = unpaired[idx]
+                device = devices[idx]
                 setup_code = questionary.text("Enter setup code (XXX-XX-XXX):").ask()
                 alias = questionary.text("Enter alias for device:").ask()
                 if setup_code and alias:
@@ -250,6 +389,26 @@ def interactive_menu():
                 manage_devices(device['alias'])
             except (ValueError, IndexError):
                 console.print("[red]❌ Invalid selection.[/red]")
+        elif selected == "💡 Setup Hue Bridge":
+            bridges = discover_hue_bridge()
+            if bridges:
+                console.print("\n[bold cyan]Available bridges:[/bold cyan]")
+                for i, bridge in enumerate(bridges, 1):
+                    console.print(f"[magenta]{i}.[/magenta] {bridge.get('name', 'Unknown')} (IP: {bridge['internalipaddress']})")
+                
+                choice = questionary.text("Enter bridge number to set up:").ask()
+                try:
+                    idx = int(choice) - 1
+                    bridge = bridges[idx]
+                    authenticate_hue_bridge(bridge['internalipaddress'])
+                except (ValueError, IndexError):
+                    console.print("[red]❌ Invalid selection.[/red]")
+        elif selected == "🔦 Manage Hue Lights":
+            config = load_hue_config()
+            if config:
+                manage_hue_lights()
+            else:
+                console.print("[yellow]⚠️  Hue not set up. Use 'Setup Hue Bridge' first.[/yellow]")
         elif selected == "🚪 Exit":
             console.print("[bold green]👋 Goodbye![/bold green]")
             break
